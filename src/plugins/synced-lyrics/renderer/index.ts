@@ -1,9 +1,11 @@
 import { createRenderer } from '@/utils';
 import { waitForElement } from '@/utils/wait-for-element';
 
+import { createSignal } from 'solid-js';
+
 import { selectors, tabStates } from './utils';
 import { setConfig, setCurrentTime } from './renderer';
-import { fetchLyrics } from './store';
+import { fetchLyrics, currentLyrics } from './store';
 
 import type { RendererContext } from '@/types/contexts';
 import type { MusicPlayer } from '@/types/music-player';
@@ -15,6 +17,13 @@ export let netFetch: (
   url: string,
   init?: RequestInit,
 ) => Promise<[number, string, Record<string, string>]>;
+
+// Floating lyrics state
+export const [isFloatingOpen, setIsFloatingOpen] = createSignal(false);
+
+let _ipc: RendererContext<SyncedLyricsPluginConfig>['ipc'] | null = null;
+export const getIpc = () => _ipc;
+let lastSentLyricsJson = '';
 
 export const renderer = createRenderer<
   {
@@ -53,10 +62,14 @@ export const renderer = createRenderer<
   },
   async videoDataChange() {
     if (!this.updateTimestampInterval) {
-      this.updateTimestampInterval = setInterval(
-        () => setCurrentTime((_ytAPI?.getCurrentTime() ?? 0) * 1000),
-        100,
-      );
+    this.updateTimestampInterval = setInterval(() => {
+        const time = (_ytAPI?.getCurrentTime() ?? 0) * 1000;
+        setCurrentTime(time);
+        // Forward time to floating window
+        if (isFloatingOpen() && _ipc) {
+          _ipc.send('synced-lyrics:floating-time', time);
+        }
+      }, 100);
     }
 
     // prettier-ignore
@@ -75,12 +88,36 @@ export const renderer = createRenderer<
   },
 
   async start(ctx: RendererContext<SyncedLyricsPluginConfig>) {
+    _ipc = ctx.ipc;
     netFetch = ctx.ipc.invoke.bind(ctx.ipc, 'synced-lyrics:fetch');
 
     setConfig(await ctx.getConfig());
 
     ctx.ipc.on('peard:update-song-info', (info: SongInfo) => {
       fetchLyrics(info);
+      // Send song info to floating window
+      if (isFloatingOpen()) {
+        ctx.ipc.send('synced-lyrics:floating-song', {
+          title: info.title,
+          artist: info.artist,
+        });
+      }
     });
+
+    // Listen for floating window closed
+    ctx.ipc.on('synced-lyrics:floating-closed', () => {
+      setIsFloatingOpen(false);
+    });
+
+    // Watch lyrics changes and forward to floating window
+    setInterval(() => {
+      if (!isFloatingOpen()) return;
+      const lyrics = currentLyrics();
+      const json = JSON.stringify(lyrics?.data ?? null);
+      if (json !== lastSentLyricsJson) {
+        lastSentLyricsJson = json;
+        ctx.ipc.send('synced-lyrics:floating-lyrics', lyrics?.data ?? null);
+      }
+    }, 250);
   },
 });

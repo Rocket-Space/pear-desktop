@@ -33,7 +33,7 @@ import {
   type ProviderState,
 } from '../../providers';
 import { currentLyrics, lyricsStore, setLyricsStore } from '../store';
-import { _ytAPI } from '../index';
+import { _ytAPI, getIpc, isFloatingOpen, setIsFloatingOpen } from '../index';
 import { config } from '../renderer';
 
 import type { PlayerAPIEvents } from '@/types/player-api-events';
@@ -304,6 +304,40 @@ export const LyricsPicker = (props: {
               style: { padding: '5px' },
             }}
           />
+        </mdui-button-icon>
+      </div>
+
+      {/* Pop-out floating lyrics button */}
+      <div class="lyrics-picker-left">
+        <mdui-button-icon>
+          <span
+            onClick={() => {
+              const ipc = getIpc();
+              if (!ipc) return;
+              if (isFloatingOpen()) {
+                ipc.invoke('synced-lyrics:close-floating');
+                setIsFloatingOpen(false);
+              } else {
+                ipc.invoke('synced-lyrics:open-floating');
+                setIsFloatingOpen(true);
+                // Send current lyrics data immediately
+                const lyrics = currentLyrics();
+                if (lyrics?.data) {
+                  ipc.send('synced-lyrics:floating-lyrics', lyrics.data);
+                }
+              }
+            }}
+            role="button"
+            style={{
+              padding: '5px',
+              cursor: 'pointer',
+              'font-size': '18px',
+              opacity: isFloatingOpen() ? '1' : '0.6',
+            }}
+            title={isFloatingOpen() ? 'Cerrar ventana flotante' : 'Abrir ventana flotante'}
+          >
+            {isFloatingOpen() ? '🔽' : '🔲'}
+          </span>
         </mdui-button-icon>
       </div>
     </div>
