@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show, onCleanup } from 'solid-js';
+import { createSignal, For, Show, onCleanup } from 'solid-js';
 
 import type { IpcRenderer } from 'electron';
 
@@ -93,6 +93,7 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
   const [totalCompleted, setTotalCompleted] = createSignal(0);
   const [totalFailed, setTotalFailed] = createSignal(0);
   const [totalSkipped, setTotalSkipped] = createSignal(0);
+  const [showButton, setShowButton] = createSignal(false);
 
   // Listen for state updates from backend
   const onStateUpdate = (state: DownloadManagerState) => {
@@ -102,6 +103,13 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
     setTotalCompleted(state.totalCompleted);
     setTotalFailed(state.totalFailed);
     setTotalSkipped(state.totalSkipped);
+
+    // Show the floating button whenever there's any activity
+    const hasActivity = state.queue.length > 0 ||
+      state.totalCompleted > 0 ||
+      state.totalFailed > 0 ||
+      state.totalSkipped > 0;
+    setShowButton(hasActivity);
   };
 
   const onItemUpdate = (item: DownloadItem) => {
@@ -129,13 +137,7 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
     if (state) onStateUpdate(state as DownloadManagerState);
   });
 
-  // Auto-open when downloads start
-  createEffect(() => {
-    const activeItems = items().filter((i) => i.status === 'downloading' || i.status === 'queued');
-    if (activeItems.length > 0 && !isOpen()) {
-      setIsOpen(true);
-    }
-  });
+  // No auto-open: user controls the panel via the floating button
 
   // ─── Derived data ────────────────────────────────────────────────
 
@@ -218,18 +220,20 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
 
   return (
     <>
-      {/* Toggle Button */}
-      <button
-        class={`dm-toggle-btn ${isOpen() ? 'dm-active' : ''}`}
-        onClick={() => setIsOpen(!isOpen())}
-        title="Gestor de Descargas"
-        id="ytmd-download-manager-toggle"
-      >
-        <DownloadIcon />
-        <Show when={badgeCount() > 0}>
-          <span class="dm-badge">{badgeCount()}</span>
-        </Show>
-      </button>
+      {/* Floating Toggle Button — visible when there's download activity */}
+      <Show when={showButton()}>
+        <button
+          class={`dm-toggle-btn ${isOpen() ? 'dm-active' : ''}`}
+          onClick={() => setIsOpen(!isOpen())}
+          title="Gestor de Descargas"
+          id="ytmd-download-manager-toggle"
+        >
+          <DownloadIcon />
+          <Show when={badgeCount() > 0}>
+            <span class="dm-badge">{badgeCount()}</span>
+          </Show>
+        </button>
+      </Show>
 
       {/* Panel */}
       <div class={`dm-panel ${isOpen() ? 'dm-open' : ''}`} id="ytmd-download-manager-panel">

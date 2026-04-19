@@ -4,36 +4,53 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  width: 40px;
-  height: 40px;
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: #e0e0e0;
+  background: rgba(120, 86, 255, 0.85);
+  color: #fff;
   cursor: pointer;
   transition: all 0.25s ease;
   flex-shrink: 0;
+  z-index: 99998;
+  box-shadow: 0 4px 16px rgba(120, 86, 255, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: dm-btn-enter 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.dm-toggle-btn svg {
+  width: 22px;
+  height: 22px;
 }
 
 .dm-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(120, 86, 255, 1);
   color: #fff;
-  transform: scale(1.05);
+  transform: scale(1.1);
+  box-shadow: 0 6px 24px rgba(120, 86, 255, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .dm-toggle-btn.dm-active {
-  background: rgba(120, 86, 255, 0.25);
-  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.9);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(167, 139, 250, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes dm-btn-enter {
+  0% { transform: scale(0); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 .dm-badge {
   position: absolute;
-  top: -2px;
-  right: -2px;
-  min-width: 18px;
-  height: 18px;
-  border-radius: 9px;
+  top: -4px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
   background: linear-gradient(135deg, #ef4444, #dc2626);
   color: #fff;
   font-size: 10px;
@@ -41,7 +58,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 4px;
+  padding: 0 5px;
   line-height: 1;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   animation: dm-badge-pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
