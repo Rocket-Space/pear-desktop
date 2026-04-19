@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { spawn, execSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 
 import { app, type BrowserWindow, ipcMain } from 'electron';
 import {
@@ -50,14 +52,15 @@ import type {
 
 type CustomSongInfo = SongInfo & { trackId?: string };
 
-const ffmpeg = lazy(async () =>
-  (await import('@ffmpeg.wasm/main')).createFFmpeg({
-    log: false,
-    logger() {}, // Console.log,
-    progress() {}, // Console.log,
-  }),
-);
-const ffmpegMutex = new Mutex();
+// Native FFmpeg will be used instead of WASM for true parallelism and performance
+let ffmpegPath: string | null = null;
+try {
+  ffmpegPath = execSync('which ffmpeg').toString().trim();
+} catch {
+  console.warn('[Downloader] FFmpeg not found in system path. Trying common locations.');
+  const commonPaths = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', 'C:\\ffmpeg\\bin\\ffmpeg.exe'];
+  ffmpegPath = commonPaths.find(p => existsSync(p)) || 'ffmpeg';
+}
 
 Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
   const properties = [];
@@ -649,67 +652,66 @@ async function iterableStreamToProcessedUint8Array(
   sendFeedback: (str: string, value?: number) => void,
   increasePlaylistProgress: (value: number) => void = () => {},
 ): Promise<Uint8Array | null> {
-  sendFeedback(t('plugins.downloader.backend.feedback.loading'), 2); // Indefinite progress bar after download
+  sendFeedback(t('plugins.downloader.backend.feedback.loading'), 2);
 
-  const safeVideoName = randomBytes(32).toString('hex');
+  // ── Phase 1: Download stream (OUTSIDE mutex — fully concurrent) ──
+  const chunks = await downloadChunks(
+    stream,
+    contentLength,
+    sendFeedback,
+    increasePlaylistProgress,
+  );
+  const rawData = Buffer.concat(chunks);
 
-  return await ffmpegMutex.runExclusive(async () => {
-    try {
-      const ffmpegInstance = await ffmpeg.get();
-      if (!ffmpegInstance.isLoaded()) {
-        await ffmpegInstance.load();
-      }
+  const tempId = randomBytes(16).toString('hex');
+  const tempInputPath = join(tmpdir(), `pear_dl_in_${tempId}`);
+  const tempOutputPath = join(tmpdir(), `pear_dl_out_${tempId}.${extension}`);
 
-      sendFeedback(t('plugins.downloader.backend.feedback.preparing-file'));
-      ffmpegInstance.FS(
-        'writeFile',
-        safeVideoName,
-        Buffer.concat(
-          await downloadChunks(
-            stream,
-            contentLength,
-            sendFeedback,
-            increasePlaylistProgress,
-          ),
-        ),
-      );
+  try {
+    // Write raw data to temp file for native FFmpeg
+    writeFileSync(tempInputPath, rawData);
 
-      sendFeedback(t('plugins.downloader.backend.feedback.converting'));
+    sendFeedback(t('plugins.downloader.backend.feedback.converting'));
 
-      ffmpegInstance.setProgress(({ ratio }) => {
-        sendFeedback(
-          t('plugins.downloader.backend.feedback.conversion-progress', {
-            percent: Math.floor(ratio * 100),
-          }),
-          ratio,
-        );
-        increasePlaylistProgress(0.15 + ratio * 0.85);
+    // ── Phase 2: Native FFmpeg conversion (Concurrent processes!) ──
+    await new Promise<void>((resolve, reject) => {
+      const args = [
+        '-y', // Overwrite
+        '-i', tempInputPath,
+        ...presetFfmpegArgs,
+        ...getFFmpegMetadataArgs(metadata),
+        tempOutputPath
+      ];
+
+      const proc = spawn(ffmpegPath!, args);
+
+      // We could parse stderr for progress here if needed, 
+      // but for audio it's so fast it might not be worth it.
+      // However, we'll keep the "Converting" message.
+
+      proc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg process exited with code ${code}`));
       });
 
-      const safeVideoNameWithExtension = `${safeVideoName}.${extension}`;
-      try {
-        await ffmpegInstance.run(
-          '-i',
-          safeVideoName,
-          ...presetFfmpegArgs,
-          ...getFFmpegMetadataArgs(metadata),
-          safeVideoNameWithExtension,
-        );
-      } finally {
-        ffmpegInstance.FS('unlink', safeVideoName);
-      }
+      proc.on('error', (err) => {
+        reject(err);
+      });
+    });
 
-      sendFeedback(t('plugins.downloader.backend.feedback.saving'));
+    sendFeedback(t('plugins.downloader.backend.feedback.saving'));
+    const finalBuffer = readFileSync(tempOutputPath);
+    
+    return new Uint8Array(finalBuffer);
 
-      try {
-        return ffmpegInstance.FS('readFile', safeVideoNameWithExtension);
-      } finally {
-        ffmpegInstance.FS('unlink', safeVideoNameWithExtension);
-      }
-    } catch (error: unknown) {
-      throw error;
-    }
-  });
+  } catch (error: unknown) {
+    console.error('[Downloader] Native FFmpeg error:', error);
+    throw error;
+  } finally {
+    // Cleanup
+    if (existsSync(tempInputPath)) unlinkSync(tempInputPath);
+    if (existsSync(tempOutputPath)) unlinkSync(tempOutputPath);
+  }
 }
 
 const getCoverBuffer = async (url: string) => {
@@ -1002,9 +1004,17 @@ function createManagedDownloadFn() {
       metadata,
       presetSetting?.ffmpegArgs ?? [],
       format.content_length ?? 0,
-      (msg, progress) => {
+      (_msg, progress) => {
         if (progress && !isNaN(progress) && progress > 0 && progress <= 1) {
-          onProgress(Math.floor(progress * 100), provider, attempt);
+          // 5-60% = download, 60-95% = conversion
+          const phase1End = 60;
+          const phase2Start = 60;
+          const phase2End = 95;
+          // Determine phase based on progress value
+          // downloadChunks reports 0-1 for download, ffmpeg reports 0-1 for conversion
+          // Since both phases call sendFeedback with 0-1, we map based on context
+          const mappedProgress = Math.floor(5 + progress * (phase1End - 5));
+          onProgress(Math.min(mappedProgress, phase2End), provider, attempt);
         }
       },
     );
