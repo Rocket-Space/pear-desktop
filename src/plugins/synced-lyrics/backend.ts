@@ -347,6 +347,9 @@ ipcRenderer.on('floating-lyrics-time', (_, timeMs) => {
     }
   }
 });
+
+// Tell the main process we are ready to receive data
+ipcRenderer.send('synced-lyrics:floating-ready');
 </script>
 </body>
 </html>`;
@@ -440,6 +443,10 @@ export const backend = createBackend({
         }
       },
     );
+
+    ipcMain.on('synced-lyrics:floating-ready', () => {
+      ctx.ipc.send('synced-lyrics:floating-request-data');
+    });
 
     // Controls from floating window
     ipcMain.handle('floating-lyrics:toggle-pin', () => {

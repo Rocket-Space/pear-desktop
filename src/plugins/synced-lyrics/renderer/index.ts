@@ -107,6 +107,18 @@ export const renderer = createRenderer<
     // Listen for floating window closed
     ctx.ipc.on('synced-lyrics:floating-closed', () => {
       setIsFloatingOpen(false);
+      lastSentLyricsJson = ''; // Reset
+    });
+
+    ctx.ipc.on('synced-lyrics:floating-request-data', () => {
+      lastSentLyricsJson = ''; // Force resend in the interval
+      if (_ytAPI) {
+        const videoData = _ytAPI.getVideoData();
+        ctx.ipc.send('synced-lyrics:floating-song', {
+          title: videoData?.title ?? '',
+          artist: videoData?.author ?? '',
+        });
+      }
     });
 
     // Watch lyrics changes and forward to floating window
