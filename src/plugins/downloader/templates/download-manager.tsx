@@ -36,6 +36,7 @@ interface DownloadManagerState {
   totalCompleted: number;
   totalFailed: number;
   totalSkipped: number;
+  pendingCount: number;
 }
 
 // ─── Icons (inline SVGs) ─────────────────────────────────────────────────────
@@ -93,6 +94,7 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
   const [totalCompleted, setTotalCompleted] = createSignal(0);
   const [totalFailed, setTotalFailed] = createSignal(0);
   const [totalSkipped, setTotalSkipped] = createSignal(0);
+  const [pendingCount, setPendingCount] = createSignal(0);
   const [showButton, setShowButton] = createSignal(false);
 
   // Listen for state updates from backend
@@ -103,12 +105,14 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
     setTotalCompleted(state.totalCompleted);
     setTotalFailed(state.totalFailed);
     setTotalSkipped(state.totalSkipped);
+    setPendingCount(state.pendingCount);
 
     // Show the floating button whenever there's any activity
     const hasActivity = state.queue.length > 0 ||
       state.totalCompleted > 0 ||
       state.totalFailed > 0 ||
-      state.totalSkipped > 0;
+      state.totalSkipped > 0 ||
+      state.pendingCount > 0;
     setShowButton(hasActivity);
   };
 
@@ -164,7 +168,7 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
     }
   };
 
-  const badgeCount = () => queueItems().length + failedItems().length;
+  const badgeCount = () => queueItems().length + failedItems().length + pendingCount();
 
   // ─── Actions ─────────────────────────────────────────────────────
 
@@ -367,6 +371,11 @@ export function DownloadManagerPanel(props: DownloadManagerProps) {
           <div class="dm-stat">
             ⬇️ <span class="dm-stat-value">{activeCount()}</span> activas
           </div>
+          <Show when={pendingCount() > 0}>
+            <div class="dm-stat">
+              📦 <span class="dm-stat-value">{pendingCount()}</span> pendientes
+            </div>
+          </Show>
           <div class="dm-stat dm-stat-completed">
             ✅ <span class="dm-stat-value">{totalCompleted()}</span>
           </div>

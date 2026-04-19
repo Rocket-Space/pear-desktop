@@ -23,7 +23,7 @@ import {
   sendFeedback as sendFeedback_,
   setBadge,
 } from './utils';
-import { downloadManager, type DownloadItem } from './download-manager-engine';
+import { downloadManager, type DownloadItem, type PendingDownload } from './download-manager-engine';
 import {
   registerCallback,
   cleanupName,
@@ -830,8 +830,10 @@ export async function downloadPlaylist(givenUrl?: string | URL) {
   }
 
   if (items.length === 1) {
-    // Single song - queue it directly via manager
-    await downloadSongViaManagerFromId(items.at(0)!.id!);
+    // Single song - queue directly
+    await downloadSongViaManager(
+      `https://music.youtube.com/watch?v=${items.at(0)!.id!}`,
+    );
     sendFeedback();
     return;
   }
@@ -847,90 +849,46 @@ export async function downloadPlaylist(givenUrl?: string | URL) {
     mkdirSync(playlistFolder, { recursive: true });
   }
 
+  // Resolve file extension from preset ONCE (not per-song)
+  const selectedPreset = config.selectedPreset ?? 'mp3 (256kbps)';
+  let presetSetting: Preset;
+  if (selectedPreset === 'Custom') {
+    presetSetting = config.customPresetSetting ?? DefaultPresetList['Custom'];
+  } else if (selectedPreset === 'Source') {
+    presetSetting = DefaultPresetList['Source'];
+  } else {
+    presetSetting = DefaultPresetList['mp3 (256kbps)'];
+  }
+  const fileExtension = presetSetting?.extension ?? 'mp3';
+
   console.log(
-    `[Downloader] Queuing playlist "${playlistTitle}" - ${items.length} songs`,
+    `[Downloader] Queuing playlist "${playlistTitle}" - ${items.length} songs (wave-based)`,
   );
 
-  // Queue all songs through the download manager - no blocking dialogs!
+  // Build batch of pending downloads from playlist data (NO per-song API calls!)
+  const batch: PendingDownload[] = [];
   let counter = 1;
   for (const song of items) {
     const trackId = isAlbum ? counter : undefined;
-    try {
-      await downloadSongViaManagerFromId(
-        song.id!,
-        playlistFolder,
-        trackId?.toString(),
-      );
-    } catch (error) {
-      console.warn(`[Downloader] Error queuing song ${song.title}: ${error}`);
-    }
+    const songTitle = song.title ?? 'Unknown';
+    const songArtist = song.author?.name ?? '';
+
+    batch.push({
+      url: `https://music.youtube.com/watch?v=${song.id!}`,
+      title: songTitle,
+      artist: songArtist,
+      playlistFolder,
+      trackId: trackId?.toString(),
+      isPlaylist: true,
+      downloadFolder: playlistFolder,
+      fileExtension,
+    });
     counter++;
   }
 
+  // Add entire batch to pending pool - engine handles wave loading
+  downloadManager.addBatchToPendingPool(batch);
   sendFeedback(); // Clear feedback - manager handles progress now
-}
-
-/**
- * Queue a song by ID through the download manager
- */
-async function downloadSongViaManagerFromId(
-  id: string,
-  playlistFolder?: string,
-  trackId?: string,
-): Promise<void> {
-  try {
-    const info = await yt.music.getInfo(id);
-    if (!info) {
-      console.error('[Downloader] Could not get info for ID:', id);
-      return;
-    }
-
-    const metadata = getMetadata(info);
-    if (metadata.album === 'N/A') {
-      metadata.album = '';
-    }
-    metadata.trackId = trackId;
-
-    const selectedPreset = config.selectedPreset ?? 'mp3 (256kbps)';
-    let presetSetting: Preset;
-    if (selectedPreset === 'Custom') {
-      presetSetting = config.customPresetSetting ?? DefaultPresetList['Custom'];
-    } else if (selectedPreset === 'Source') {
-      presetSetting = DefaultPresetList['Source'];
-    } else {
-      presetSetting = DefaultPresetList['mp3 (256kbps)'];
-    }
-
-    const defaultDownloadOptions: FormatOptions = {
-      type: (await isPremium()) ? 'audio' : 'video+audio',
-      quality: 'best',
-      format: 'any',
-    };
-
-    const format1 = info.chooseFormat(defaultDownloadOptions);
-    let targetFileExtension: string;
-    if (!presetSetting?.extension) {
-      targetFileExtension =
-        VideoFormatList.find((it) => it.itag === format1.itag)?.container ?? 'mp3';
-    } else {
-      targetFileExtension = presetSetting?.extension ?? 'mp3';
-    }
-
-    const downloadFolder = playlistFolder || config.downloadFolder || app.getPath('downloads');
-
-    downloadManager.addToQueue({
-      url: `https://music.youtube.com/watch?v=${id}`,
-      title: metadata.title ?? 'Unknown',
-      artist: metadata.artist ?? '',
-      playlistFolder,
-      trackId,
-      isPlaylist: !!playlistFolder,
-      downloadFolder,
-      fileExtension: targetFileExtension,
-    });
-  } catch (error) {
-    console.error('[Downloader] Error queuing song by ID:', error);
-  }
 }
 
 /**

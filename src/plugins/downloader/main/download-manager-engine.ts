@@ -33,6 +33,17 @@ export interface DownloadItem {
   fileName?: string;
 }
 
+export interface PendingDownload {
+  url: string;
+  title: string;
+  artist: string;
+  playlistFolder?: string;
+  trackId?: string;
+  isPlaylist: boolean;
+  downloadFolder: string;
+  fileExtension: string;
+}
+
 export interface DownloadManagerState {
   queue: DownloadItem[];
   activeCount: number;
@@ -41,6 +52,7 @@ export interface DownloadManagerState {
   totalCompleted: number;
   totalFailed: number;
   totalSkipped: number;
+  pendingCount: number;
 }
 
 export type DownloadFunction = (
@@ -53,18 +65,54 @@ export type DownloadFunction = (
 const PROVIDERS = ['YTMUSIC', 'ANDROID', 'TV_EMBEDDED'] as const;
 const MAX_RETRIES_PER_PROVIDER = 3;
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function extractVideoId(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.searchParams.get('v');
+  } catch {
+    return null;
+  }
+}
+
+function generateFilename(
+  artist: string,
+  title: string,
+  ext: string,
+): string {
+  const name = `${artist ? `${artist} - ` : ''}${title}`;
+  let filename = filenamify(`${name}.${ext}`, {
+    replacement: '_',
+    maxLength: 255,
+  });
+  if (!is.macOS()) {
+    filename = filename.normalize('NFC');
+  }
+  return filename;
+}
+
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
 export class DownloadManagerEngine {
+  // Wave system: pending pool holds ALL playlist songs, queue holds current wave
+  private pendingPool: PendingDownload[] = [];
   private queue: DownloadItem[] = [];
+  private completedItems: DownloadItem[] = [];
+  private failedItems: DownloadItem[] = [];
   private activeDownloads = 0;
   private maxConcurrent = 1;
   private isPaused = false;
   private downloadFn: DownloadFunction | null = null;
   private win: BrowserWindow | null = null;
-  private completedItems: DownloadItem[] = [];
-  private failedItems: DownloadItem[] = [];
   private idCounter = 0;
+
+  // Duplicate tracking by video ID
+  private knownVideoIds: Set<string> = new Set();
+
+  // Wave config
+  private readonly WAVE_SIZE = 100;
+  private readonly WAVE_THRESHOLD = 10;
 
   // Stats
   private totalCompleted = 0;
@@ -82,7 +130,6 @@ export class DownloadManagerEngine {
   setMaxConcurrent(max: number): void {
     this.maxConcurrent = Math.max(1, Math.min(5, max));
     this.broadcastState();
-    // Try to start more downloads if we increased concurrency
     this.processQueue();
   }
 
@@ -91,86 +138,111 @@ export class DownloadManagerEngine {
   }
 
   /**
-   * Add a single song to the download queue
+   * Add a single song to the download queue (immediate, not wave-based)
    */
-  addToQueue(params: {
-    url: string;
-    title: string;
-    artist: string;
-    playlistFolder?: string;
-    trackId?: string;
-    isPlaylist?: boolean;
-    downloadFolder: string;
-    fileExtension: string;
-  }): string {
-    const { url, title, artist, playlistFolder, trackId, isPlaylist, downloadFolder, fileExtension } = params;
+  addToQueue(params: PendingDownload): string {
+    const videoId = extractVideoId(params.url);
 
-    const id = `dl-${++this.idCounter}-${Date.now()}`;
-
-    const name = `${artist ? `${artist} - ` : ''}${title}`;
-    let filename = filenamify(`${name}.${fileExtension}`, {
-      replacement: '_',
-      maxLength: 255,
-    });
-    if (!is.macOS()) {
-      filename = filename.normalize('NFC');
+    // Duplicate check
+    if (videoId && this.knownVideoIds.has(videoId)) {
+      return ''; // Already known
     }
 
-    const dir = playlistFolder || downloadFolder;
+    const filename = generateFilename(
+      params.artist,
+      params.title,
+      params.fileExtension,
+    );
+    const dir = params.playlistFolder || params.downloadFolder;
     const filePath = join(dir, filename);
 
-    // Check if file already exists
+    // File exists check
     if (existsSync(filePath)) {
+      if (videoId) this.knownVideoIds.add(videoId);
+      const id = this.nextId();
       const item: DownloadItem = {
         id,
-        url,
-        title,
-        artist,
+        url: params.url,
+        title: params.title,
+        artist: params.artist,
         status: 'skipped',
         progress: 100,
         currentProvider: '',
         currentAttempt: 0,
         totalProviderAttempts: 0,
-        playlistFolder,
-        trackId,
-        isPlaylist: isPlaylist ?? false,
+        playlistFolder: params.playlistFolder,
+        trackId: params.trackId,
+        isPlaylist: params.isPlaylist,
         fileName: filename,
       };
       this.totalSkipped++;
       this.completedItems.unshift(item);
-      // Keep last 100 completed
       if (this.completedItems.length > 100) {
         this.completedItems = this.completedItems.slice(0, 100);
       }
       this.broadcastState();
-      this.broadcastItemUpdate(item);
       return id;
     }
 
+    if (videoId) this.knownVideoIds.add(videoId);
+    const id = this.nextId();
     const item: DownloadItem = {
       id,
-      url,
-      title,
-      artist,
+      url: params.url,
+      title: params.title,
+      artist: params.artist,
       status: 'queued',
       progress: 0,
       currentProvider: '',
       currentAttempt: 0,
       totalProviderAttempts: 0,
-      playlistFolder,
-      trackId,
-      isPlaylist: isPlaylist ?? false,
+      playlistFolder: params.playlistFolder,
+      trackId: params.trackId,
+      isPlaylist: params.isPlaylist,
       fileName: filename,
     };
 
     this.queue.push(item);
     this.broadcastState();
-    this.broadcastItemUpdate(item);
-
-    // Start processing
     this.processQueue();
-
     return id;
+  }
+
+  /**
+   * Add a batch of songs to the pending pool (wave-based loading for playlists).
+   * Only loads the first wave immediately; subsequent waves load as previous ones finish.
+   */
+  addBatchToPendingPool(items: PendingDownload[]): void {
+    for (const item of items) {
+      const videoId = extractVideoId(item.url);
+
+      // Skip duplicates
+      if (videoId && this.knownVideoIds.has(videoId)) {
+        this.totalSkipped++;
+        continue;
+      }
+
+      // Skip already downloaded files
+      const filename = generateFilename(
+        item.artist,
+        item.title,
+        item.fileExtension,
+      );
+      const dir = item.playlistFolder || item.downloadFolder;
+      const filePath = join(dir, filename);
+
+      if (existsSync(filePath)) {
+        if (videoId) this.knownVideoIds.add(videoId);
+        this.totalSkipped++;
+        continue;
+      }
+
+      if (videoId) this.knownVideoIds.add(videoId);
+      this.pendingPool.push(item);
+    }
+
+    this.broadcastState();
+    this.loadNextWave();
   }
 
   /**
@@ -189,16 +261,12 @@ export class DownloadManagerEngine {
       item.totalProviderAttempts = 0;
       item.error = undefined;
       this.queue.push(item);
-      this.broadcastItemUpdate(item);
     }
 
     this.broadcastState();
     this.processQueue();
   }
 
-  /**
-   * Retry a single failed download
-   */
   retrySingle(itemId: string): void {
     const idx = this.failedItems.findIndex((i) => i.id === itemId);
     if (idx === -1) return;
@@ -214,14 +282,10 @@ export class DownloadManagerEngine {
     item.error = undefined;
 
     this.queue.push(item);
-    this.broadcastItemUpdate(item);
     this.broadcastState();
     this.processQueue();
   }
 
-  /**
-   * Remove a single item from failed list
-   */
   removeFailed(itemId: string): void {
     const idx = this.failedItems.findIndex((i) => i.id === itemId);
     if (idx !== -1) {
@@ -231,34 +295,23 @@ export class DownloadManagerEngine {
     }
   }
 
-  /**
-   * Clear all completed/skipped downloads
-   */
   clearCompleted(): void {
     this.completedItems = [];
     this.broadcastState();
   }
 
-  /**
-   * Pause all downloads (finish current, don't start new)
-   */
   pauseAll(): void {
     this.isPaused = true;
     this.broadcastState();
   }
 
-  /**
-   * Resume downloading from queue
-   */
   resumeAll(): void {
     this.isPaused = false;
     this.broadcastState();
-    this.processQueue();
+    // Force re-trigger queue processing
+    setTimeout(() => this.processQueue(), 50);
   }
 
-  /**
-   * Get current state for UI
-   */
   getState(): DownloadManagerState {
     return {
       queue: [
@@ -272,12 +325,10 @@ export class DownloadManagerEngine {
       totalCompleted: this.totalCompleted,
       totalFailed: this.totalFailed,
       totalSkipped: this.totalSkipped,
+      pendingCount: this.pendingPool.length,
     };
   }
 
-  /**
-   * Get queue size (pending + active)
-   */
   getQueueSize(): number {
     return this.queue.length;
   }
@@ -292,13 +343,69 @@ export class DownloadManagerEngine {
 
   // ─── Private ─────────────────────────────────────────────────────────────
 
-  private async processQueue(): Promise<void> {
+  private nextId(): string {
+    return `dl-${++this.idCounter}-${Date.now()}`;
+  }
+
+  /**
+   * Load the next wave of songs from pending pool into the active queue.
+   */
+  private loadNextWave(): void {
+    if (this.pendingPool.length === 0) return;
+
+    const queuedCount = this.queue.filter((i) => i.status === 'queued').length;
+    // Only load if queue is running low
+    if (queuedCount > this.WAVE_THRESHOLD && this.queue.length > 0) return;
+
+    const batch = this.pendingPool.splice(0, this.WAVE_SIZE);
+    console.log(
+      `[DownloadManager] Loading wave: ${batch.length} songs (${this.pendingPool.length} remaining in pool)`,
+    );
+
+    for (const pending of batch) {
+      const id = this.nextId();
+      const filename = generateFilename(
+        pending.artist,
+        pending.title,
+        pending.fileExtension,
+      );
+      const item: DownloadItem = {
+        id,
+        url: pending.url,
+        title: pending.title,
+        artist: pending.artist,
+        status: 'queued',
+        progress: 0,
+        currentProvider: '',
+        currentAttempt: 0,
+        totalProviderAttempts: 0,
+        playlistFolder: pending.playlistFolder,
+        trackId: pending.trackId,
+        isPlaylist: pending.isPlaylist,
+        fileName: filename,
+      };
+      this.queue.push(item);
+    }
+
+    this.broadcastState();
+    this.processQueue();
+  }
+
+  private processQueue(): void {
     if (this.isPaused) return;
     if (!this.downloadFn) return;
 
+    // Check if we need to load the next wave
+    const queuedCount = this.queue.filter((i) => i.status === 'queued').length;
+    if (
+      queuedCount <= this.WAVE_THRESHOLD &&
+      this.pendingPool.length > 0
+    ) {
+      this.loadNextWave();
+    }
+
     while (
       this.activeDownloads < this.maxConcurrent &&
-      this.queue.length > 0 &&
       !this.isPaused
     ) {
       const item = this.queue.find((i) => i.status === 'queued');
@@ -309,13 +416,15 @@ export class DownloadManagerEngine {
       this.broadcastState();
       this.broadcastItemUpdate(item);
 
-      // Start download in background (don't await)
+      // Start download in background
       this.executeDownload(item).catch((err) => {
-        console.error('[DownloadManager] Fatal error in download execution:', err);
+        console.error(
+          '[DownloadManager] Fatal error in download execution:',
+          err,
+        );
       });
     }
 
-    // Update progress bar
     this.updateProgressBar();
   }
 
@@ -323,14 +432,17 @@ export class DownloadManagerEngine {
     let lastError: string | undefined;
 
     for (const provider of PROVIDERS) {
-      for (let attempt = 1; attempt <= MAX_RETRIES_PER_PROVIDER; attempt++) {
+      for (
+        let attempt = 1;
+        attempt <= MAX_RETRIES_PER_PROVIDER;
+        attempt++
+      ) {
         item.currentProvider = provider;
         item.currentAttempt = attempt;
         item.totalProviderAttempts++;
         this.broadcastItemUpdate(item);
 
         try {
-          // Clone item with provider info for the download fn
           const downloadItem = { ...item, currentProvider: provider };
           await this.downloadFn!(downloadItem, (progress, prov, att) => {
             item.progress = progress;
@@ -340,13 +452,12 @@ export class DownloadManagerEngine {
             this.updateProgressBar();
           });
 
-          // Success!
+          // Success
           item.status = 'completed';
           item.progress = 100;
           this.totalCompleted++;
           this.activeDownloads--;
 
-          // Move from queue to completed
           this.removeFromQueue(item.id);
           this.completedItems.unshift(item);
           if (this.completedItems.length > 100) {
@@ -368,13 +479,14 @@ export class DownloadManagerEngine {
       }
     }
 
-    // All providers and retries exhausted
+    // All retries exhausted
     item.status = 'failed';
-    item.error = lastError ?? t('plugins.downloader.backend.dialog.error.message');
+    item.error =
+      lastError ??
+      t('plugins.downloader.backend.dialog.error.message');
     this.totalFailed++;
     this.activeDownloads--;
 
-    // Move from queue to failed
     this.removeFromQueue(item.id);
     this.failedItems.push(item);
 
