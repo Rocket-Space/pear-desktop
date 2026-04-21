@@ -26,7 +26,7 @@ jobs:
       WORKFLOW_A: "Build After macOS Artifacts"
       WORKFLOW_B: "Build After Pear Desktop Artifacts"
       WORKFLOW_C: "Build After Linux Arch Artifacts"
-      INSTALLER_EXT_REGEX: '\.exe$|\.deb$|\.rpm$|\.AppImage$|\.pacman$|\.msi$|\.zip$'
+      INSTALLER_EXT_REGEX: '\.exe$|\.deb$|\.rpm$|\.AppImage$|\.tar\.gz$|\.msi$|\.zip$'
       WAIT_TIMEOUT: "1200"
       POLL_INTERVAL: "15"
       CURL_RETRIES: "3"

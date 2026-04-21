@@ -28,7 +28,7 @@
     "dist:linux": "pnpm clean && pnpm build && pnpm electron-builder --linux -p never",
     "dist:linux:deb-arm64": "pnpm clean && pnpm build && pnpm electron-builder --linux deb:arm64 -p never",
     "dist:linux:rpm-arm64": "pnpm clean && pnpm build && pnpm electron-builder --linux rpm:arm64 -p never",
-    "dist:linux:pacman": "pnpm clean && pnpm build && pnpm electron-builder --linux pacman:x64 -p never",
+    "dist:linux:tar-gz": "pnpm clean && pnpm build && pnpm electron-builder --linux tar.gz:x64 -p never",
     "dist:mac": "pnpm clean && pnpm build && pnpm electron-builder --mac dmg:x64 -p never",
     "dist:mac:arm64": "pnpm clean && pnpm build && pnpm electron-builder --mac dmg:arm64 -p never",
     "dist:win": "pnpm clean && pnpm build && pnpm electron-builder --win -p never",

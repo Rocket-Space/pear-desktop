@@ -47,4 +47,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pnpm clean && pnpm build && pnpm electron-builder --linux pacman:x64 -p always
+          pnpm clean && pnpm build && pnpm electron-builder --linux tar.gz:x64 -p always

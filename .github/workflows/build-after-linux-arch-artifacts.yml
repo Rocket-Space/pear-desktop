@@ -35,9 +35,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build pacman package for Arch/CachyOS
+      - name: Build tar.gz portable for Arch/CachyOS
         run: |
-          pnpm dist:linux:pacman
+          pnpm dist:linux:tar-gz
 
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
