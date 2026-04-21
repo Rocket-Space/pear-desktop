@@ -82,27 +82,65 @@ let yt: Innertube;
 let win: BrowserWindow;
 let playingUrl: string;
 
-const isPremium = async () => {
-  // If signed out, it is understood as non-premium
-  const isSignedIn = (await win.webContents.executeJavaScript(
-    '!!yt.config_.LOGGED_IN',
-  )) as boolean;
+// ── Premium status cache (avoids serialized IPC calls for concurrent downloads) ──
+let _premiumCached: boolean | null = null;
+let _premiumCacheTime = 0;
+let _premiumCheckPromise: Promise<boolean> | null = null;
+const PREMIUM_CACHE_TTL = 60_000; // 60 seconds
 
-  if (!isSignedIn) return false;
+const isPremium = async (): Promise<boolean> => {
+  const now = Date.now();
 
-  // If signed in, check if the upgrade button is present
-  const upgradeBtnIconPathData = (await win.webContents.executeJavaScript(
-    'document.querySelector(\'iron-iconset-svg[name="yt-sys-icons"] #\u0079\u006f\u0075\u0074\u0075\u0062\u0065_music_monochrome\')?.firstChild?.getAttribute("d")?.substring(0, 15)',
-  )) as string | null;
+  // Return cached value if still valid
+  if (_premiumCached !== null && now - _premiumCacheTime < PREMIUM_CACHE_TTL) {
+    return _premiumCached;
+  }
 
-  // Fallback to non-premium if the icon is not found
-  if (!upgradeBtnIconPathData) return false;
+  // If a check is already in-flight, reuse it (avoids concurrent IPC storms)
+  if (_premiumCheckPromise) {
+    return _premiumCheckPromise;
+  }
 
-  const upgradeButton = `ytmusic-guide-entry-renderer:has(> tp-yt-paper-item > yt-icon path[d^="${upgradeBtnIconPathData}"])`;
+  _premiumCheckPromise = (async () => {
+    try {
+      // If signed out, it is understood as non-premium
+      const isSignedIn = (await win.webContents.executeJavaScript(
+        '!!yt.config_.LOGGED_IN',
+      )) as boolean;
 
-  return (await win.webContents.executeJavaScript(
-    `!document.querySelector('${upgradeButton}')`,
-  )) as boolean;
+      if (!isSignedIn) {
+        _premiumCached = false;
+        _premiumCacheTime = Date.now();
+        return false;
+      }
+
+      // If signed in, check if the upgrade button is present
+      const upgradeBtnIconPathData = (await win.webContents.executeJavaScript(
+        'document.querySelector(\'iron-iconset-svg[name="yt-sys-icons"] #\u0079\u006f\u0075\u0074\u0075\u0062\u0065_music_monochrome\')?.firstChild?.getAttribute("d")?.substring(0, 15)',
+      )) as string | null;
+
+      // Fallback to non-premium if the icon is not found
+      if (!upgradeBtnIconPathData) {
+        _premiumCached = false;
+        _premiumCacheTime = Date.now();
+        return false;
+      }
+
+      const upgradeButton = `ytmusic-guide-entry-renderer:has(> tp-yt-paper-item > yt-icon path[d^="${upgradeBtnIconPathData}"])`;
+
+      const result = (await win.webContents.executeJavaScript(
+        `!document.querySelector('${upgradeButton}')`,
+      )) as boolean;
+
+      _premiumCached = result;
+      _premiumCacheTime = Date.now();
+      return result;
+    } finally {
+      _premiumCheckPromise = null;
+    }
+  })();
+
+  return _premiumCheckPromise;
 };
 
 const sendError = (error: Error, source?: string) => {

@@ -106,6 +106,7 @@ export class DownloadManagerEngine {
   private downloadFn: DownloadFunction | null = null;
   private win: BrowserWindow | null = null;
   private idCounter = 0;
+  private _isProcessingQueue = false;
 
   // Duplicate tracking by video ID
   private knownVideoIds: Set<string> = new Set();
@@ -391,41 +392,52 @@ export class DownloadManagerEngine {
     this.processQueue();
   }
 
-  private processQueue(): void {
+  private async processQueue(): Promise<void> {
     if (this.isPaused) return;
     if (!this.downloadFn) return;
+    // Prevent re-entry if we're currently processing (staggering)
+    if (this._isProcessingQueue) return;
+    this._isProcessingQueue = true;
 
-    // Check if we need to load the next wave
-    const queuedCount = this.queue.filter((i) => i.status === 'queued').length;
-    if (
-      queuedCount <= this.WAVE_THRESHOLD &&
-      this.pendingPool.length > 0
-    ) {
-      this.loadNextWave();
+    try {
+      // Check if we need to load the next wave
+      const queuedCount = this.queue.filter((i) => i.status === 'queued').length;
+      if (
+        queuedCount <= this.WAVE_THRESHOLD &&
+        this.pendingPool.length > 0
+      ) {
+        this.loadNextWave();
+      }
+
+      while (
+        this.activeDownloads < this.maxConcurrent &&
+        !this.isPaused
+      ) {
+        const item = this.queue.find((i) => i.status === 'queued');
+        if (!item) break;
+
+        item.status = 'downloading';
+        this.activeDownloads++;
+        this.broadcastState();
+        this.broadcastItemUpdate(item);
+
+        // Start download in background
+        this.executeDownload(item).catch((err) => {
+          console.error(
+            '[DownloadManager] Fatal error in download execution:',
+            err,
+          );
+        });
+
+        // Stagger: wait a bit before starting the next one to avoid
+        // hammering the API/network concurrently which causes stalls
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      this.updateProgressBar();
+    } finally {
+      this._isProcessingQueue = false;
     }
-
-    while (
-      this.activeDownloads < this.maxConcurrent &&
-      !this.isPaused
-    ) {
-      const item = this.queue.find((i) => i.status === 'queued');
-      if (!item) break;
-
-      item.status = 'downloading';
-      this.activeDownloads++;
-      this.broadcastState();
-      this.broadcastItemUpdate(item);
-
-      // Start download in background
-      this.executeDownload(item).catch((err) => {
-        console.error(
-          '[DownloadManager] Fatal error in download execution:',
-          err,
-        );
-      });
-    }
-
-    this.updateProgressBar();
   }
 
   private async executeDownload(item: DownloadItem): Promise<void> {
