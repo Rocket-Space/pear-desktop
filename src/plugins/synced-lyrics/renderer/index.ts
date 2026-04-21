@@ -124,12 +124,28 @@ export const renderer = createRenderer<
     // Watch lyrics changes and forward to floating window
     setInterval(() => {
       if (!isFloatingOpen()) return;
+      
+      if (_ytAPI) {
+        const isPaused = _ytAPI.getPlayerState() !== 1;
+        ctx.ipc.send('synced-lyrics:floating-state', isPaused);
+      }
+
       const lyrics = currentLyrics();
       const json = JSON.stringify(lyrics?.data ?? null);
       if (json !== lastSentLyricsJson) {
         lastSentLyricsJson = json;
-        ctx.ipc.send('synced-lyrics:floating-lyrics', lyrics?.data ?? null);
+        ctx.ipc.send('synced-lyrics:floating-lyrics', JSON.parse(json));
       }
     }, 250);
+
+    ctx.ipc.on('synced-lyrics:floating-action', (action: string) => {
+      if (!_ytAPI) return;
+      if (action === 'prev') _ytAPI.previousVideo();
+      if (action === 'next') _ytAPI.nextVideo();
+      if (action === 'playpause') {
+        if (_ytAPI.getPlayerState() === 1) _ytAPI.pauseVideo();
+        else _ytAPI.playVideo();
+      }
+    });
   },
 });

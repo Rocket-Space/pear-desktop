@@ -78,6 +78,15 @@ html, body {
   padding: 10px 16px;
   flex-shrink: 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#song-info-text {
+  flex: 1;
+  min-width: 0;
+  margin-right: 12px;
 }
 
 #song-title {
@@ -96,6 +105,33 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ─── Playback Controls ─────────────────────────── */
+#playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pb-btn {
+  -webkit-app-region: no-drag;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.pb-btn:hover {
+  background: rgba(255,255,255,0.2);
+  transform: scale(1.05);
 }
 
 /* ─── Lyrics Area ───────────────────────────────── */
@@ -153,7 +189,7 @@ html, body {
   padding: 10px 16px;
   border-top: 1px solid rgba(255,255,255,0.06);
   flex-shrink: 0;
-  display: flex;
+  display: none; /* hidden by default */
   flex-direction: column;
   gap: 6px;
 }
@@ -202,13 +238,21 @@ html, body {
 <div id="window-root">
   <div id="titlebar">
     <div id="titlebar-title">♪ Letras</div>
+    <button class="tb-btn" id="btn-toggle-controls" title="Mostrar/Ocultar opacidad">⚙</button>
     <button class="tb-btn pinned" id="btn-pin" title="Fijar encima">📌</button>
     <button class="tb-btn" id="btn-close" title="Cerrar">✕</button>
   </div>
 
   <div id="song-info">
-    <div id="song-title">—</div>
-    <div id="song-artist">—</div>
+    <div id="song-info-text">
+      <div id="song-title">—</div>
+      <div id="song-artist">—</div>
+    </div>
+    <div id="playback-controls">
+      <button class="pb-btn" id="btn-prev" title="Anterior">⏮</button>
+      <button class="pb-btn" id="btn-playpause" title="Reproducir/Pausar">⏸</button>
+      <button class="pb-btn" id="btn-next" title="Siguiente">⏭</button>
+    </div>
   </div>
 
   <div id="lyrics-area">
@@ -242,10 +286,16 @@ const bgVal = document.getElementById('bg-val');
 const textVal = document.getElementById('text-val');
 const btnPin = document.getElementById('btn-pin');
 const btnClose = document.getElementById('btn-close');
+const btnToggleControls = document.getElementById('btn-toggle-controls');
+const controls = document.getElementById('controls');
+const btnPrev = document.getElementById('btn-prev');
+const btnPlayPause = document.getElementById('btn-playpause');
+const btnNext = document.getElementById('btn-next');
 
 let lines = [];
 let isPlain = false;
 let lastActiveIdx = -1;
+let controlsVisible = false;
 
 // ─── Controls ───────────────────────────────────
 bgSlider.addEventListener('input', () => {
@@ -260,6 +310,11 @@ textSlider.addEventListener('input', () => {
   textVal.textContent = textSlider.value + '%';
 });
 
+btnToggleControls.addEventListener('click', () => {
+  controlsVisible = !controlsVisible;
+  controls.style.display = controlsVisible ? 'flex' : 'none';
+});
+
 btnPin.addEventListener('click', () => {
   ipcRenderer.invoke('floating-lyrics:toggle-pin').then(pinned => {
     btnPin.classList.toggle('pinned', pinned);
@@ -269,6 +324,11 @@ btnPin.addEventListener('click', () => {
 btnClose.addEventListener('click', () => {
   ipcRenderer.invoke('floating-lyrics:close');
 });
+
+// Playback actions
+btnPrev.addEventListener('click', () => ipcRenderer.invoke('floating-lyrics:action', 'prev'));
+btnPlayPause.addEventListener('click', () => ipcRenderer.invoke('floating-lyrics:action', 'playpause'));
+btnNext.addEventListener('click', () => ipcRenderer.invoke('floating-lyrics:action', 'next'));
 
 // ─── IPC Listeners ──────────────────────────────
 ipcRenderer.on('floating-lyrics-song', (_, song) => {
@@ -346,6 +406,10 @@ ipcRenderer.on('floating-lyrics-time', (_, timeMs) => {
       activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }
+});
+
+ipcRenderer.on('floating-lyrics-state', (_, isPaused) => {
+  btnPlayPause.textContent = isPaused ? '▶' : '⏸';
 });
 
 // Tell the main process we are ready to receive data
@@ -435,6 +499,12 @@ export const backend = createBackend({
       }
     });
 
+    ctx.ipc.on('synced-lyrics:floating-state', (isPaused: boolean) => {
+      if (floatingWin && !floatingWin.isDestroyed()) {
+        floatingWin.webContents.send('floating-lyrics-state', isPaused);
+      }
+    });
+
     ctx.ipc.on(
       'synced-lyrics:floating-song',
       (song: { title: string; artist: string }) => {
@@ -462,6 +532,10 @@ export const backend = createBackend({
       if (floatingWin && !floatingWin.isDestroyed()) {
         floatingWin.close();
       }
+    });
+
+    ipcMain.handle('floating-lyrics:action', (_, action) => {
+      ctx.ipc.send('synced-lyrics:floating-action', action);
     });
   },
 
