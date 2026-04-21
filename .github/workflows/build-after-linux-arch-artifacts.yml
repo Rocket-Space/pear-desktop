@@ -1,0 +1,48 @@
+name: Build After Linux Arch Artifacts
+
+on:
+  workflow_run:
+    workflows: ["Build Pear Desktop Linux Arch"]
+    types:
+      - completed
+
+permissions: {}
+
+env:
+  NODE_VERSION: "22.x"
+
+jobs:
+  build:
+    name: Build Linux Arch Artifacts
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10
+          run_install: false
+
+      - name: Setup NodeJS
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build pacman package for Arch/CachyOS
+        run: |
+          pnpm dist:linux:pacman
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: build-artifacts-linux-arch
+          path: pack/
+          retention-days: 7
+          if-no-files-found: error

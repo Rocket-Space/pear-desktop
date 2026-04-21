@@ -69,6 +69,9 @@ linux:
         - x64
         - arm64
         - armv7l
+    - target: pacman
+      arch:
+        - x64
     - target: tar.gz
       arch:
         - x64

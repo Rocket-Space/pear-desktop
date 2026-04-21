@@ -5,6 +5,7 @@ on:
     workflows:
       - "Build After macOS Artifacts"
       - "Build After Pear Desktop Artifacts"
+      - "Build After Linux Arch Artifacts"
     types:
       - completed
 
@@ -24,13 +25,14 @@ jobs:
       REPO: pear-desktop
       WORKFLOW_A: "Build After macOS Artifacts"
       WORKFLOW_B: "Build After Pear Desktop Artifacts"
-      INSTALLER_EXT_REGEX: '\.exe$|\.deb$|\.rpm$|\.AppImage$|\.msi$|\.zip$'
+      WORKFLOW_C: "Build After Linux Arch Artifacts"
+      INSTALLER_EXT_REGEX: '\.exe$|\.deb$|\.rpm$|\.AppImage$|\.pacman$|\.msi$|\.zip$'
       WAIT_TIMEOUT: "1200"
       POLL_INTERVAL: "15"
       CURL_RETRIES: "3"
       GH_UPLOAD_RETRIES: "3"
       TAG_PREFIX: "auto-release-"
-      COMPATIBILITY: "Ubuntu (20.04+), Debian, Linux Mint (Cinnamon, MATE, Xfce), Fedora, CentOS/RHEL, Arch (AppImage), Windows (exe, msi)"
+      COMPATIBILITY: "Ubuntu (20.04+), Debian, Linux Mint (Cinnamon, MATE, Xfce), Fedora, CentOS/RHEL, Arch/CachyOS (pacman, AppImage), Windows (exe, msi)"
       DIAG_MODE: "true"
 
     steps:
@@ -62,6 +64,7 @@ REPO="${REPO}"
 GHTOKEN="${GHTOKEN}"
 WORKFLOW_A="${WORKFLOW_A}"
 WORKFLOW_B="${WORKFLOW_B}"
+WORKFLOW_C="${WORKFLOW_C}"
 INSTALLER_EXT_REGEX="${INSTALLER_EXT_REGEX}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT}"
 POLL_INTERVAL="${POLL_INTERVAL}"
@@ -155,19 +158,29 @@ start_ts=$(date +%s)
 deadline=$((start_ts + WAIT_TIMEOUT))
 matched_run_a=""
 matched_run_b=""
+matched_run_c=""
 matched_sha=""
 
 wf_a_id=$(resolve_workflow_id "${WORKFLOW_A}")
 wf_b_id=$(resolve_workflow_id "${WORKFLOW_B}")
-log "Resolved workflow ids: A=${wf_a_id:-none} B=${wf_b_id:-none}"
+wf_c_id=$(resolve_workflow_id "${WORKFLOW_C}")
+log "Resolved workflow ids: A=${wf_a_id:-none} B=${wf_b_id:-none} C=${wf_c_id:-none}"
 if [ -z "${wf_a_id}" ] || [ -z "${wf_b_id}" ]; then
   log "ERROR: Could not resolve one or both workflow ids. Check WORKFLOW_A/WORKFLOW_B names."
   exit 10
+fi
+if [ -z "${wf_c_id}" ]; then
+  log "WARNING: Could not resolve workflow C (Linux Arch). Continuing without it."
 fi
 
 while [ "$(date +%s)" -le "${deadline}" ]; do
   run_a_json=$(get_latest_successful_run_by_workflow_id "${wf_a_id}" || true)
   run_b_json=$(get_latest_successful_run_by_workflow_id "${wf_b_id}" || true)
+  if [ -n "${wf_c_id}" ]; then
+    run_c_json=$(get_latest_successful_run_by_workflow_id "${wf_c_id}" || true)
+  else
+    run_c_json=""
+  fi
 
   if [ -n "${run_a_json}" ] && [ -n "${run_b_json}" ]; then
     sha_a=$(echo "${run_a_json}" | jq -r '.head_sha')
@@ -175,9 +188,21 @@ while [ "$(date +%s)" -le "${deadline}" ]; do
     id_a=$(echo "${run_a_json}" | jq -r '.id')
     id_b=$(echo "${run_b_json}" | jq -r '.id')
     log "Found runs: A(id=${id_a}, sha=${sha_a}) B(id=${id_b}, sha=${sha_b})"
-    if [ "${sha_a}" = "${sha_b}" ]; then
+
+    # Check workflow C (Linux Arch) if available
+    if [ -n "${run_c_json}" ]; then
+      sha_c=$(echo "${run_c_json}" | jq -r '.head_sha')
+      id_c=$(echo "${run_c_json}" | jq -r '.id')
+      log "Found run C(id=${id_c}, sha=${sha_c})"
+    else
+      sha_c="${sha_a}"  # Skip C matching if not available
+      id_c=""
+    fi
+
+    if [ "${sha_a}" = "${sha_b}" ] && [ "${sha_a}" = "${sha_c}" ]; then
       matched_run_a="${id_a}"
       matched_run_b="${id_b}"
+      matched_run_c="${id_c}"
       matched_sha="${sha_a}"
       log "Matched runs with same commit: ${matched_sha}"
       break
@@ -197,7 +222,7 @@ fi
 
 WORKDIR=$(mktemp -d)
 ART_DIR="${WORKDIR}/artifacts"
-mkdir -p "${ART_DIR}/A" "${ART_DIR}/B"
+mkdir -p "${ART_DIR}/A" "${ART_DIR}/B" "${ART_DIR}/C"
 INSTALLERS_DIR="${WORKDIR}/installers"
 mkdir -p "${INSTALLERS_DIR}"
 
@@ -205,15 +230,23 @@ log "Downloading artifacts for run A=${matched_run_a}"
 download_artifacts_for_run "${matched_run_a}" "${ART_DIR}/A"
 log "Downloading artifacts for run B=${matched_run_b}"
 download_artifacts_for_run "${matched_run_b}" "${ART_DIR}/B"
+if [ -n "${matched_run_c}" ]; then
+  log "Downloading artifacts for run C=${matched_run_c}"
+  download_artifacts_for_run "${matched_run_c}" "${ART_DIR}/C"
+fi
 
 log "Listing downloaded artifact zips:"
 ls -la "${ART_DIR}" || true
 ls -la "${ART_DIR}/A" || true
 ls -la "${ART_DIR}/B" || true
+ls -la "${ART_DIR}/C" || true
 
 log "Extracting installers"
 extract_installers "${ART_DIR}/A" "${INSTALLERS_DIR}"
 extract_installers "${ART_DIR}/B" "${INSTALLERS_DIR}"
+if [ -n "${matched_run_c}" ]; then
+  extract_installers "${ART_DIR}/C" "${INSTALLERS_DIR}"
+fi
 
 log "Installers collected:"
 ls -la "${INSTALLERS_DIR}" || true
@@ -229,6 +262,7 @@ RELEASE_NAME="Automated release ${RELEASE_TAG}"
 RELEASE_BODY="Automated release combining artifacts from workflows:
 - ${WORKFLOW_A} (run ${matched_run_a})
 - ${WORKFLOW_B} (run ${matched_run_b})
+- ${WORKFLOW_C} (run ${matched_run_c:-skipped})
 
 Commit: ${matched_sha}
 
@@ -278,4 +312,5 @@ EOF
           REPO: ${{ env.REPO }}
           WORKFLOW_A: ${{ env.WORKFLOW_A }}
           WORKFLOW_B: ${{ env.WORKFLOW_B }}
+          WORKFLOW_C: ${{ env.WORKFLOW_C }}
           INSTALLER_EXT_REGEX: ${{ env.INSTALL
