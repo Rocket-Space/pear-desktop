@@ -7,16 +7,25 @@ function skipAd(target: Element) {
   }
 }
 
+let wasAdShowing = false;
+let originalMuteState = false;
+
 function speedUpAndMute(player: Element, isAdShowing: boolean) {
+  if (isAdShowing === wasAdShowing) return;
+  
   const video = player.querySelector<HTMLVideoElement>('video');
   if (!video) return;
+  
   if (isAdShowing) {
+    originalMuteState = video.muted;
     video.playbackRate = 16;
     video.muted = true;
-  } else if (!isAdShowing) {
+  } else {
     video.playbackRate = 1;
-    video.muted = false;
+    video.muted = originalMuteState;
   }
+  
+  wasAdShowing = isAdShowing;
 }
 
 export const loadAdSpeedup = () => {
