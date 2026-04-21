@@ -87,3 +87,8 @@ tp-yt-iron-dropdown,
 tp-yt-paper-dialog {
   app-region: no-drag;
 }
+
+/* Fix font fallback for native lyrics tab on Linux distros missing Roboto (e.g. CachyOS/Arch) */
+.description.ytmusic-description-shelf-renderer {
+  font-family: 'YouTube Sans', 'Roboto', 'Noto Sans', 'Ubuntu', 'Cantarell', 'Liberation Sans', 'Segoe UI', sans-serif !important;
+}
