@@ -35,14 +35,27 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build tar.gz portable for Arch/CachyOS
+      - name: Install makeself
+        run: sudo apt-get update && sudo apt-get install -y makeself
+
+      - name: Build self-extracting setup for Arch/CachyOS
         run: |
           pnpm dist:linux:tar-gz
+          # Extract the tar.gz to create the makeself archive
+          tar xzf pack/*.tar.gz -C pack/
+          EXTRACTED_DIR=$(find pack/ -maxdepth 1 -type d ! -name pack | head -1)
+          cp assets/linux-installer.sh "$EXTRACTED_DIR/install.sh"
+          chmod +x "$EXTRACTED_DIR/install.sh"
+          VERSION=$(node -pe "require('./package.json').version")
+          makeself --gzip "$EXTRACTED_DIR" "pack/pear-desktop-${VERSION}-setup" "Pear Desktop Installer" ./install.sh
+          # Clean up, keep only the setup executable
+          rm -f pack/*.tar.gz
+          rm -rf "$EXTRACTED_DIR"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: build-artifacts-linux-arch
-          path: pack/
+          path: pack/pear-desktop-*-setup
           retention-days: 7
           if-no-files-found: error

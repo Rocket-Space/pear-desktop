@@ -26,13 +26,13 @@ jobs:
       WORKFLOW_A: "Build After macOS Artifacts"
       WORKFLOW_B: "Build After Pear Desktop Artifacts"
       WORKFLOW_C: "Build After Linux Arch Artifacts"
-      INSTALLER_EXT_REGEX: '\.exe$|\.deb$|\.rpm$|\.AppImage$|\.tar\.gz$|\.msi$|\.zip$'
+      INSTALLER_EXT_REGEX: '\.exe$|\.deb$|\.rpm$|\.AppImage$|\.tar\.gz$|\.msi$|\.zip$|-setup$'
       WAIT_TIMEOUT: "1200"
       POLL_INTERVAL: "15"
       CURL_RETRIES: "3"
       GH_UPLOAD_RETRIES: "3"
       TAG_PREFIX: "auto-release-"
-      COMPATIBILITY: "Ubuntu (20.04+), Debian, Linux Mint (Cinnamon, MATE, Xfce), Fedora, CentOS/RHEL, Arch/CachyOS (pacman, AppImage), Windows (exe, msi)"
+      COMPATIBILITY: "Ubuntu (20.04+), Debian, Linux Mint (Cinnamon, MATE, Xfce), Fedora, CentOS/RHEL, Arch/CachyOS (setup, AppImage), Windows (exe, msi)"
       DIAG_MODE: "true"
 
     steps:

@@ -37,14 +37,36 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Install makeself
+        run: sudo apt-get update && sudo apt-get install -y makeself
+
       - name: Vite Build
         if: github.repository != 'pear-devs/pear-desktop' || github.event_name == 'pull_request'
         run: |
           pnpm build
+          pnpm electron-builder --linux tar.gz:x64 -p never
+          # Create self-extracting installer
+          tar xzf pack/*.tar.gz -C pack/
+          EXTRACTED_DIR=$(find pack/ -maxdepth 1 -type d ! -name pack | head -1)
+          cp assets/linux-installer.sh "$EXTRACTED_DIR/install.sh"
+          chmod +x "$EXTRACTED_DIR/install.sh"
+          VERSION=$(node -pe "require('./package.json').version")
+          makeself --gzip "$EXTRACTED_DIR" "pack/pear-desktop-${VERSION}-setup" "Pear Desktop Installer" ./install.sh
+          rm -rf "$EXTRACTED_DIR"
 
       - name: Build and release on Linux Arch
         if: github.repository == 'pear-devs/pear-desktop' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pnpm clean && pnpm build && pnpm electron-builder --linux tar.gz:x64 -p always
+          pnpm clean && pnpm build && pnpm electron-builder --linux tar.gz:x64 -p never
+          # Create self-extracting installer
+          tar xzf pack/*.tar.gz -C pack/
+          EXTRACTED_DIR=$(find pack/ -maxdepth 1 -type d ! -name pack | head -1)
+          cp assets/linux-installer.sh "$EXTRACTED_DIR/install.sh"
+          chmod +x "$EXTRACTED_DIR/install.sh"
+          VERSION=$(node -pe "require('./package.json').version")
+          makeself --gzip "$EXTRACTED_DIR" "pack/pear-desktop-${VERSION}-setup" "Pear Desktop Installer" ./install.sh
+          # Remove tar.gz and extracted dir, keep only the setup executable
+          rm -f pack/*.tar.gz
+          rm -rf "$EXTRACTED_DIR"
