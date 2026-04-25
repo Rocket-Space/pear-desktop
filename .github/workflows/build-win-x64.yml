@@ -1,0 +1,47 @@
+name: Build Windows x64 EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  NODE_VERSION: "22.x"
+
+jobs:
+  build:
+    name: Build Windows 10 x64
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10
+          run_install: false
+
+      - name: Setup NodeJS
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Windows x64 Executable
+        run: |
+          pnpm clean
+          pnpm build
+          pnpm electron-builder --win portable:x64 nsis:x64 -p never
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-exe
+          path: pack/*.exe
+          if-no-files-found: warn
