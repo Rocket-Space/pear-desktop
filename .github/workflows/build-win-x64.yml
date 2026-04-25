@@ -37,7 +37,7 @@ jobs:
         run: |
           pnpm clean
           pnpm build
-          pnpm electron-builder --win portable:x64 nsis:x64 -p never
+          pnpm electron-builder --win nsis:x64 -p never
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
