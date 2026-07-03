@@ -706,6 +706,17 @@ async function iterableStreamToProcessedUint8Array(
 
   const safeVideoName = randomBytes(32).toString('hex');
 
+  // Step 1: Download chunks in parallel (no mutex blocking network requests)
+  const downloadedBuffer = Buffer.concat(
+    await downloadChunks(
+      stream,
+      contentLength,
+      sendFeedback,
+      increasePlaylistProgress,
+    ),
+  );
+
+  // Step 2: Acquire mutex lock only for CPU-bound WebAssembly transcoding
   return await ffmpegMutex.runExclusive(async () => {
     try {
       const ffmpegInstance = await ffmpeg.get();
@@ -717,14 +728,7 @@ async function iterableStreamToProcessedUint8Array(
       ffmpegInstance.FS(
         'writeFile',
         safeVideoName,
-        Buffer.concat(
-          await downloadChunks(
-            stream,
-            contentLength,
-            sendFeedback,
-            increasePlaylistProgress,
-          ),
-        ),
+        downloadedBuffer,
       );
 
       sendFeedback(t('plugins.downloader.backend.feedback.converting'));
