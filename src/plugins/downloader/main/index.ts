@@ -18,7 +18,7 @@ import {
   type YT,
   type YTMusic,
   type Types,
-} from '\u0079\u006f\u0075\u0074\u0075\u0062\u0065i.js';
+} from 'youtubei.js';
 
 import { t } from '@/i18n';
 import { getNetFetchAsFetch } from '@/plugins/utils/main';
@@ -79,6 +79,21 @@ let yt: Innertube;
 let win: BrowserWindow;
 let playingUrl: string;
 
+interface QueueItem {
+  id: string;
+  title: string;
+  artist: string;
+  status: 'waiting' | 'downloading' | 'done' | 'failed' | 'cancelled';
+  progress: number;
+  playlistFolder?: string;
+  trackId?: string;
+  isAlbum?: boolean;
+}
+
+let downloadQueue: QueueItem[] = [];
+let isCancelled = false;
+let globalSetConfig: ((conf: Partial<Omit<DownloaderPluginConfig, 'enabled'>>) => Promise<void> | void) | null = null;
+
 const isPremium = async () => {
   // If signed out, it is understood as non-premium
   const isSignedIn = (await win.webContents.executeJavaScript(
@@ -89,7 +104,7 @@ const isPremium = async () => {
 
   // If signed in, check if the upgrade button is present
   const upgradeBtnIconPathData = (await win.webContents.executeJavaScript(
-    'document.querySelector(\'iron-iconset-svg[name="yt-sys-icons"] #\u0079\u006f\u0075\u0074\u0075\u0062\u0065_music_monochrome\')?.firstChild?.getAttribute("d")?.substring(0, 15)',
+    'document.querySelector(\'iron-iconset-svg[name="yt-sys-icons"] #youtube_music_monochrome\')?.firstChild?.getAttribute("d")?.substring(0, 15)',
   )) as string | null;
 
   // Fallback to non-premium if the icon is not found
@@ -130,7 +145,7 @@ const sendError = (error: Error, source?: string) => {
 export const getCookieFromWindow = async (win: BrowserWindow) => {
   return (
     await win.webContents.session.cookies.get({
-      url: 'https://music.\u0079\u006f\u0075\u0074\u0075\u0062\u0065.com',
+      url: 'https://music.youtube.com',
     })
   )
     .map((it) => it.name + '=' + it.value)
@@ -139,13 +154,32 @@ export const getCookieFromWindow = async (win: BrowserWindow) => {
 
 let config: DownloaderPluginConfig;
 
+const updateQueueToRenderer = () => {
+  if (win && !win.isDestroyed()) {
+    const completed = downloadQueue.filter(item => item.status === 'done').length;
+    win.webContents.send('downloader-queue-update', downloadQueue, completed, config.maxParallelDownloads ?? 1);
+  }
+};
+
+const updateProgressToRenderer = (id: string, updates: Partial<QueueItem>) => {
+  const item = downloadQueue.find(i => i.id === id);
+  if (item) {
+    Object.assign(item, updates);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('downloader-progress-update', { id, ...updates });
+    }
+  }
+};
+
 export const onMainLoad = async ({
   window: _win,
   getConfig,
+  setConfig,
   ipc,
 }: BackendContext<DownloaderPluginConfig>) => {
   win = _win;
   config = await getConfig();
+  globalSetConfig = setConfig;
 
   yt = await Innertube.create({
     cache: new UniversalCache(false),
@@ -213,13 +247,90 @@ export const onMainLoad = async ({
     }
   }
 
-  ipc.handle('download-song', (url: string) => downloadSong(url));
+  ipc.handle('download-song', (url: string) => {
+    // Add to visual download manager
+    const videoId = getVideoId(url);
+    if (videoId) {
+      const existing = downloadQueue.find(i => i.id === videoId);
+      if (!existing) {
+        downloadQueue.push({
+          id: videoId,
+          title: 'Obteniendo información...',
+          artist: '',
+          status: 'waiting',
+          progress: 0,
+        });
+        updateQueueToRenderer();
+      }
+      downloadSong(url);
+    }
+  });
+
   ipc.on('peard:video-src-changed', (data: GetPlayerResponse) => {
     playingUrl = data.microformat.microformatDataRenderer.urlCanonical;
   });
+
   ipc.handle('download-playlist-request', async (url: string) =>
     downloadPlaylist(url),
   );
+
+  // New visual manager IPC Handlers
+  ipc.handle('downloader-set-max-parallel', async (n: number) => {
+    config.maxParallelDownloads = n;
+    if (globalSetConfig) {
+      await globalSetConfig({ maxParallelDownloads: n });
+    }
+    updateQueueToRenderer();
+  });
+
+  ipc.handle('downloader-cancel-all', () => {
+    isCancelled = true;
+    for (const item of downloadQueue) {
+      if (item.status === 'waiting' || item.status === 'downloading') {
+        item.status = 'cancelled';
+        item.progress = 0;
+      }
+    }
+    updateQueueToRenderer();
+  });
+
+  ipc.handle('downloader-retry', async (data: { id: string; title: string; artist: string }) => {
+    isCancelled = false;
+    const item = downloadQueue.find(i => i.id === data.id);
+    if (item) {
+      item.status = 'waiting';
+      item.progress = 0;
+      updateQueueToRenderer();
+
+      const runSongDownload = async () => {
+        try {
+          updateProgressToRenderer(data.id, { status: 'downloading' });
+          if (item.playlistFolder) {
+            await downloadSongFromId(
+              item.id,
+              item.playlistFolder,
+              item.trackId,
+              (p) => updateProgressToRenderer(data.id, { progress: p * 100 }),
+              true
+            );
+          } else {
+            await downloadSongFromId(
+              item.id,
+              undefined,
+              undefined,
+              (p) => updateProgressToRenderer(data.id, { progress: p * 100 }),
+              true
+            );
+          }
+          updateProgressToRenderer(data.id, { status: 'done', progress: 100 });
+        } catch {
+          updateProgressToRenderer(data.id, { status: 'failed' });
+        }
+      };
+
+      runSongDownload();
+    }
+  });
 
   downloadSongOnFinishSetup({ ipc, getConfig });
 };
@@ -230,28 +341,48 @@ export const onConfigChange = (newConfig: DownloaderPluginConfig) => {
 
 export async function downloadSong(
   url: string,
-  playlistFolder?: string ,
-  trackId?: string ,
+  playlistFolder?: string,
+  trackId?: string,
   increasePlaylistProgress: (value: number) => void = () => {},
   skipErrorDialog = false,
 ) {
+  const id = getVideoId(url);
+  if (!id) return;
+
   let resolvedName;
   let attempts = 0;
   const maxAttempts = 3;
   while (attempts < maxAttempts) {
+    if (isCancelled) {
+      updateProgressToRenderer(id, { status: 'cancelled' });
+      return;
+    }
+
     try {
       attempts++;
+      updateProgressToRenderer(id, { status: 'downloading' });
       await downloadSongUnsafe(
         false,
         url,
-        (name: string) => (resolvedName = name),
+        (name: string) => {
+          resolvedName = name;
+          const parts = name.split(' - ');
+          const artist = parts.length > 1 ? parts[0] : 'Unknown';
+          const title = parts.length > 1 ? parts.slice(1).join(' - ') : name;
+          updateProgressToRenderer(id, { title, artist });
+        },
         playlistFolder,
         trackId,
-        increasePlaylistProgress,
+        (p) => {
+          increasePlaylistProgress(p);
+          updateProgressToRenderer(id, { progress: p * 100 });
+        },
       );
+      updateProgressToRenderer(id, { status: 'done', progress: 100 });
       return;
     } catch (error: unknown) {
       if (attempts >= maxAttempts) {
+        updateProgressToRenderer(id, { status: 'failed' });
         if (!skipErrorDialog) {
           sendError(error as Error, resolvedName || url);
         } else {
@@ -267,8 +398,8 @@ export async function downloadSong(
 
 export async function downloadSongFromId(
   id: string,
-  playlistFolder?: string ,
-  trackId?: string ,
+  playlistFolder?: string,
+  trackId?: string,
   increasePlaylistProgress: (value: number) => void = () => {},
   skipErrorDialog = false,
 ) {
@@ -276,19 +407,36 @@ export async function downloadSongFromId(
   let attempts = 0;
   const maxAttempts = 3;
   while (attempts < maxAttempts) {
+    if (isCancelled) {
+      updateProgressToRenderer(id, { status: 'cancelled' });
+      return;
+    }
+
     try {
       attempts++;
+      updateProgressToRenderer(id, { status: 'downloading' });
       await downloadSongUnsafe(
         true,
         id,
-        (name: string) => (resolvedName = name),
+        (name: string) => {
+          resolvedName = name;
+          const parts = name.split(' - ');
+          const artist = parts.length > 1 ? parts[0] : 'Unknown';
+          const title = parts.length > 1 ? parts.slice(1).join(' - ') : name;
+          updateProgressToRenderer(id, { title, artist });
+        },
         playlistFolder,
         trackId,
-        increasePlaylistProgress,
+        (p) => {
+          increasePlaylistProgress(p);
+          updateProgressToRenderer(id, { progress: p * 100 });
+        },
       );
+      updateProgressToRenderer(id, { status: 'done', progress: 100 });
       return;
     } catch (error: unknown) {
       if (attempts >= maxAttempts) {
+        updateProgressToRenderer(id, { status: 'failed' });
         if (!skipErrorDialog) {
           sendError(error as Error, resolvedName || id);
         } else {
@@ -361,8 +509,8 @@ async function downloadSongUnsafe(
   isId: boolean,
   idOrUrl: string,
   setName: (name: string) => void,
-  playlistFolder?: string ,
-  trackId?: string ,
+  playlistFolder?: string,
+  trackId?: string,
   increasePlaylistProgress: (value: number) => void = () => {},
 ) {
   const sendFeedback = (message: unknown, progress?: number) => {
@@ -540,7 +688,6 @@ async function downloadChunks(
       ratio,
     );
     // 15% for download, 85% for conversion
-    // This is a very rough estimate, trying to make the progress bar look nice
     increasePlaylistProgress(ratio * 0.15);
   }
   return chunks;
@@ -861,8 +1008,28 @@ async function downloadPlaylistItems(
   win.setProgressBar(2); // Starts with indefinite bar
   setBadge(items.length);
 
+  isCancelled = false;
+
+  // Populate Queue items
+  const newQueueItems: QueueItem[] = items.map((song) => {
+    const trackId = isAlbum ? song.originalIndex : undefined;
+    return {
+      id: song.id,
+      title: song.title,
+      artist: song.authorName,
+      status: 'waiting',
+      progress: 0,
+      playlistFolder,
+      trackId: trackId?.toString(),
+      isAlbum,
+    };
+  });
+
+  // Keep existing items, append new ones
+  downloadQueue = [...downloadQueue, ...newQueueItems];
+  updateQueueToRenderer();
+
   let completedCount = 0;
-  const failedSongs: PlaylistItem[] = [];
   const itemProgresses = new Array(items.length).fill(0);
 
   const updateGlobalProgress = () => {
@@ -887,29 +1054,36 @@ async function downloadPlaylistItems(
 
   await runWithConcurrencyLimit(
     maxParallel,
-    items,
+    newQueueItems,
     async (song, index) => {
-      const trackId = isAlbum ? song.originalIndex : undefined;
+      if (isCancelled) {
+        updateProgressToRenderer(song.id, { status: 'cancelled' });
+        return;
+      }
+
       const increaseProgress = (itemPercentage: number) => {
         itemProgresses[index] = itemPercentage;
         updateGlobalProgress();
+        updateProgressToRenderer(song.id, { progress: itemPercentage * 100 });
       };
 
       try {
+        updateProgressToRenderer(song.id, { status: 'downloading' });
         await downloadSongFromId(
           song.id,
           playlistFolder,
-          trackId?.toString(),
+          song.trackId,
           increaseProgress,
           true, // skipErrorDialog
         );
+        updateProgressToRenderer(song.id, { status: 'done', progress: 100 });
       } catch (error) {
         console.error(`Song failed after 3 attempts: ${song.title}`, error);
-        failedSongs.push(song);
+        updateProgressToRenderer(song.id, { status: 'failed' });
       } finally {
         itemProgresses[index] = 1.0;
         completedCount++;
-        setBadge(items.length - completedCount);
+        setBadge(Math.max(0, items.length - completedCount));
         updateFeedback();
         updateGlobalProgress();
       }
@@ -919,21 +1093,6 @@ async function downloadPlaylistItems(
   win.setProgressBar(-1); // Close progress bar
   setBadge(0); // Close badge counter
   sendFeedback_(win); // Clear feedback
-
-  if (failedSongs.length > 0) {
-    const failedListText = failedSongs.map(s => `- ${s.authorName} - ${s.title}`).join('\n');
-    const response = dialog.showMessageBoxSync(win, {
-      type: 'warning',
-      buttons: ['Reintentar', 'Cancelar'],
-      defaultId: 0,
-      title: 'Descargas fallidas',
-      message: `Las siguientes canciones fallaron después de 3 intentos:`,
-      detail: `${failedListText}\n\n¿Desea reintentar la descarga de estas canciones?`,
-    });
-    if (response === 0) {
-      await downloadPlaylistItems(failedSongs, playlistFolder, isAlbum);
-    }
-  }
 }
 
 function getFFmpegMetadataArgs(metadata: CustomSongInfo) {
