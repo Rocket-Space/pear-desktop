@@ -52,31 +52,18 @@ jobs:
         run: |
           pnpm build
 
-      # Install Snap/Flatpak dependencies for Linux packaging on forks
-      - name: Install Linux Packaging Dependencies on Fork
-        if: startsWith(matrix.os, 'ubuntu') && github.repository != 'pear-devs/pear-desktop'
-        run: |
-          sudo snap install snapcraft --classic
-          sudo apt update
-          sudo apt install -y flatpak flatpak-builder
-          sudo flatpak remote-add --if-not-exists --system flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub org.freedesktop.Platform/x86_64/24.08
-          sudo flatpak install -y flathub org.freedesktop.Sdk/x86_64/24.08
-          sudo flatpak install -y flathub org.electronjs.Electron2.BaseApp/x86_64/24.08
-
       # Pack installers if it is a fork (release doesn't run on forks)
       - name: Packaging on Mac (Fork)
         if: startsWith(matrix.os, 'macOS') && github.repository != 'pear-devs/pear-desktop'
         run: |
           pnpm dist:mac
-          pnpm dist:mac:arm64
 
       - name: Packaging on Linux (Fork)
         if: startsWith(matrix.os, 'ubuntu') && github.repository != 'pear-devs/pear-desktop'
         run: |
-          pnpm dist:linux
-          pnpm dist:linux:deb-arm64
-          pnpm dist:linux:rpm-arm64
+          pnpm clean && pnpm build
+          # Build only x64 formats to speed up and avoid snap/flatpak failures on fork builds
+          pnpm electron-builder --linux deb:x64 rpm:x64 AppImage:x64 tar.gz:x64 -p never
 
       - name: Packaging on Windows (Fork)
         if: startsWith(matrix.os, 'windows') && github.repository != 'pear-devs/pear-desktop'
